@@ -1,0 +1,660 @@
+openapi: 3.0.3
+info:
+  title: ATM Banking System API
+  description: |
+    Backend banking system built with Node.js, TypeScript, Express and PostgreSQL.
+    
+    Supports:
+    - User registration and authentication (JWT in httpOnly cookie)
+    - Bank accounts (one per user)
+    - Card management (up to 5 cards per account, PIN-protected)
+    - Transfers between cards
+    - ATM (bankomat) operations: deposit, withdraw, history (authenticated via card PIN + ATM password)
+    - Balance tracking and transaction history
+    
+    **Authentication:**
+    - Most endpoints require JWT in cookie `accessToken` (set on login/register).
+    - ATM endpoints use `card_id` + `pin` + `bankomat_id` + `password` instead of JWT.
+    
+    **Response format:**
+    - Success: `{ "message": string, "data": any }`
+    - Error: `{ "message": string }`
+    
+    **Notes:**
+    - Database: PostgreSQL (hardcoded credentials in config, port 5433)
+    - Cash is stored on individual cards, account balance is SUM of cards' cash
+    - PIN is 4 digits, hashed with bcrypt
+    - GraphQL endpoint exists but is a stub (throws error)
+    - Some routes are GET with request body (non-standard)
+  version: 1.0.0
+  contact:
+    name: prestige-savelev
+
+servers:
+  - url: http://localhost:3000/api
+    description: Local development server
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: accessToken
+      description: JWT token set as httpOnly cookie on successful login or registration
+
+  schemas:
+    SuccessResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        data:
+          type: object
+    ErrorResponse:
+      type: object
+      properties:
+        message:
+          type: string
+    UserPublic:
+      type: object
+      properties:
+        id:
+          type: integer
+        first_name:
+          type: string
+        last_name:
+          type: string
+        age:
+          type: integer
+        bio:
+          type: string
+    UserCreate:
+      type: object
+      required: [first_name, last_name, email, gender, age, bio, password]
+      properties:
+        first_name:
+          type: string
+        last_name:
+          type: string
+        email:
+          type: string
+          format: email
+        gender:
+          type: string
+        age:
+          type: integer
+        bio:
+          type: string
+        password:
+          type: string
+    AuthRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+    Card:
+      type: object
+      properties:
+        id:
+          type: integer
+        card_number:
+          type: string
+        card_name:
+          type: string
+        cash:
+          type: number
+        is_active:
+          type: boolean
+    PinRequest:
+      type: object
+      required: [pin]
+      properties:
+        pin:
+          type: string
+          description: 4-digit PIN
+          pattern: '^[0-9]{4}$'
+    CardIdPin:
+      type: object
+      required: [card_id, pin]
+      properties:
+        card_id:
+          type: integer
+        pin:
+          type: string
+          pattern: '^[0-9]{4}$'
+    TransferRequest:
+      type: object
+      required: [sender_card_number, receiver_card_number, pin, cash]
+      properties:
+        sender_card_number:
+          type: string
+        receiver_card_number:
+          type: string
+        pin:
+          type: string
+          pattern: '^[0-9]{4}$'
+        cash:
+          type: number
+          minimum: 0.01
+    BankomatAuth:
+      type: object
+      required: [card_id, pin, bankomat_id, password]
+      properties:
+        card_id:
+          type: integer
+        pin:
+          type: string
+          pattern: '^[0-9]{4}$'
+        bankomat_id:
+          type: integer
+        password:
+          type: string
+    BankomatOperation:
+      type: object
+      required: [card_id, bankomat_id, pin, password, cash]
+      properties:
+        card_id:
+          type: integer
+        bankomat_id:
+          type: integer
+        pin:
+          type: string
+          pattern: '^[0-9]{4}$'
+        password:
+          type: string
+        cash:
+          type: number
+          minimum: 0.01
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: integer
+        sender_card_number:
+          type: string
+        receiver_card_number:
+          type: string
+        cash:
+          type: number
+        created_at:
+          type: string
+          format: date-time
+    BankomatTransaction:
+      type: object
+      properties:
+        id:
+          type: integer
+        card_id:
+          type: integer
+        bankomat_id:
+          type: integer
+        transaction_type:
+          type: string
+          enum: [deposit, withdrawal]
+        cash:
+          type: number
+
+security:
+  - cookieAuth: []
+
+paths:
+  /user/auth:
+    post:
+      tags: [Auth]
+      summary: Sign in
+      description: Authenticate user by email/password. Sets `accessToken` httpOnly cookie.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthRequest'
+      responses:
+        '200':
+          description: Successful authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users:
+    get:
+      tags: [Users]
+      summary: Get all users
+      description: Returns list of users (id, first_name, last_name, age, bio). Public endpoint.
+      security: []
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+    post:
+      tags: [Users]
+      summary: Register new user
+      description: Creates user, hashes password, sets accessToken cookie.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreate'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Get current user
+      description: Returns current authenticated user profile.
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/{id}:
+    get:
+      tags: [Users]
+      summary: Get user by ID
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: User found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/delete:
+    post:
+      tags: [Users]
+      summary: Delete current user
+      description: Deletes user, their bank account and all cards.
+      responses:
+        '200':
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /bank_account/create:
+    post:
+      tags: [Bank Account]
+      summary: Create bank account and first card
+      description: Creates one bank account per user and generates a card.
+      responses:
+        '200':
+          description: Account and card created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '409':
+          description: Account already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /bank_account:
+    get:
+      tags: [Bank Account]
+      summary: Get user's bank account
+      responses:
+        '200':
+          description: Account number
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: No account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /bank_account/delete:
+    post:
+      tags: [Bank Account]
+      summary: Delete bank account and cards
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /bank_account/balance:
+    get:
+      tags: [Bank Account]
+      summary: Get account balance
+      description: Balance = SUM of cash on all cards of the account.
+      responses:
+        '200':
+          description: Balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /card:
+    get:
+      tags: [Cards]
+      summary: Get user's cards
+      responses:
+        '200':
+          description: List of cards
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /card/pin:
+    post:
+      tags: [Cards]
+      summary: Set or change card PIN and activate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CardIdPin'
+      responses:
+        '200':
+          description: PIN changed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /card/add:
+    post:
+      tags: [Cards]
+      summary: Add new card
+      description: Max 5 cards per account. Optional PIN activates the card.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pin:
+                  type: string
+                  pattern: '^[0-9]{4}$'
+      responses:
+        '200':
+          description: Card created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '403':
+          description: Limit of 5 cards reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /card/balance/{id}:
+    get:
+      tags: [Cards]
+      summary: Get card balance
+      description: Requires PIN in request body (non-standard GET with body).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PinRequest'
+      responses:
+        '200':
+          description: Card balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '402':
+          description: Card not active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Wrong PIN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /card/delete/{id}:
+    post:
+      tags: [Cards]
+      summary: Delete card
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PinRequest'
+      responses:
+        '200':
+          description: Card deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /card/deactivation/{id}:
+    post:
+      tags: [Cards]
+      summary: Deactivate card
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PinRequest'
+      responses:
+        '200':
+          description: Card deactivated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /card/activation/{id}:
+    post:
+      tags: [Cards]
+      summary: Activate card
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PinRequest'
+      responses:
+        '200':
+          description: Card activated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /transaction/transfer:
+    post:
+      tags: [Transactions]
+      summary: Transfer money between cards
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferRequest'
+      responses:
+        '200':
+          description: Transfer successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /transaction:
+    get:
+      tags: [Transactions]
+      summary: Get card transfer history
+      responses:
+        '200':
+          description: Transaction history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /bankomat_transaction:
+    get:
+      tags: [ATM / Bankomat]
+      summary: Get ATM transaction history
+      description: Authenticated via card PIN + ATM password. Uses request body on GET.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankomatAuth'
+      responses:
+        '200':
+          description: ATM transactions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /bankomat_transaction/deposit:
+    post:
+      tags: [ATM / Bankomat]
+      summary: Deposit cash via ATM
+      description: Deducts from ATM cash, adds to card. Checks ATM limits and available cash.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankomatOperation'
+      responses:
+        '200':
+          description: Deposit successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Insufficient ATM cash or invalid amount
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          description: Exceeds ATM transaction limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /bankomat_transaction/withdraw:
+    post:
+      tags: [ATM / Bankomat]
+      summary: Withdraw cash via ATM
+      description: Deducts from card, adds to ATM. Checks card balance and ATM limit.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankomatOperation'
+      responses:
+        '200':
+          description: Withdrawal successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Insufficient card balance or invalid amount
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
