@@ -1,0 +1,25 @@
+services:
+  db:
+    image: postgres:18
+    command: ["postgres", "-c", "timezone=Europe/Moscow"]
+    container_name: postgres-dev
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+
+  pgadmin:
+    image: dpage/pgadmin4:9.19
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@yandex.ru
+      PGADMIN_DEFAULT_PASSWORD: admin
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "8080:80"
+
+volumes:
+  postgres_data:
+  pgadmin_data:
